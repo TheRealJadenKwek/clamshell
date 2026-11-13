@@ -1,0 +1,72 @@
+default_platform(:ios)
+
+APP_ID = "com.jadenkwek.clamshell"
+
+# The App Store Connect API key: ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_PATH from the environment,
+# or, for any not set, from ~/.config/clamshell/asc.env (plain NAME=value lines, outside the repo).
+ASC_ENV_FILE = File.expand_path("~/.config/clamshell/asc.env")
+
+def asc_setting(name)
+  value = ENV[name].to_s.strip
+  if value.empty? && File.exist?(ASC_ENV_FILE)
+    File.foreach(ASC_ENV_FILE) do |line|
+      line = line.strip
+      next if line.empty? || line.start_with?("#") || !line.include?("=")
+      key, val = line.split("=", 2)
+      value = val.strip.delete_prefix('"').delete_suffix('"') if key.strip == name
+    end
+  end
+  UI.user_error!("#{name} is not set. Export it, or add #{name}=... to #{ASC_ENV_FILE}.") if value.empty?
+  value
+end
+
+KEY_ID = asc_setting("ASC_KEY_ID")
+ISSUER_ID = asc_setting("ASC_ISSUER_ID")
+KEY_PATH = File.expand_path(asc_setting("ASC_KEY_PATH"))
+
+platform :ios do
+  before_all do
+    app_store_connect_api_key(key_id: KEY_ID, issuer_id: ISSUER_ID, key_filepath: KEY_PATH)
+  end
+
+  desc "Build an App Store signed build/Clamshell.ipa"
+  lane :build do |options|
+    sh("cd .. && xcodegen generate")
+    # App Store profile from the existing Apple Distribution cert;
+    # the API key cannot use Xcode's cloud-managed signing.
+    get_provisioning_profile(app_identifier: APP_ID, provisioning_name: "#{APP_ID} AppStore",
+                             force: ENV["FORCE_PROFILE"] == "1")
+    profile = lane_context[SharedValues::SIGH_NAME]
+    number = options[:build] || ((latest_testflight_build_number(app_identifier: APP_ID, initial_build_number: 0) rescue 0) + 1)
+    build_app(
+      project: "Clamshell.xcodeproj",
+      scheme: "Clamshell",
+      configuration: "Release",
+      export_method: "app-store",
+      skip_package_dependencies_resolution: true,
+      xcargs: "CURRENT_PROJECT_VERSION=#{number} -allowProvisioningUpdates " \
+              "-authenticationKeyPath #{KEY_PATH} -authenticationKeyID #{KEY_ID} " \
+              "-authenticationKeyIssuerID #{ISSUER_ID}",
+      export_options: {
+        signingStyle: "manual",
+        provisioningProfiles: { APP_ID => profile }
+      },
+      output_directory: "./build",
+      output_name: "Clamshell.ipa"
+    )
+  end
+
+  desc "Build the iPhone app and upload it to TestFlight"
+  lane :beta do |options|
+    if Spaceship::ConnectAPI::App.find(APP_ID).nil?
+      UI.user_error!("No App Store Connect app for #{APP_ID} yet. Create it, then rerun `fastlane beta`.")
+    end
+    build(options)
+    upload_to_testflight(skip_waiting_for_build_processing: true)
+  end
+
+  desc "Upload the ipa that `fastlane build` already made"
+  lane :upload do
+    upload_to_testflight(ipa: "./build/Clamshell.ipa", skip_waiting_for_build_processing: true)
+  end
+end

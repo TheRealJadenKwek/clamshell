@@ -1,0 +1,92 @@
+name: Clamshell
+options:
+  bundleIdPrefix: com.jadenkwek
+  deploymentTarget:
+    iOS: "18.0"
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    DEVELOPMENT_TEAM: RLC58VS9R6
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  ClamshellHost:
+    type: application
+    platform: macOS
+    sources:
+      - Shared
+      - Host
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.clamshell.host
+        PRODUCT_NAME: Clamshell Host
+        ENABLE_HARDENED_RUNTIME: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Clamshell Host
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Clamshell Host lets your paired iPhone find this Mac on your network.
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+    info:
+      path: Host/Info.plist
+      properties:
+        LSUIElement: true
+        CFBundleDisplayName: Clamshell Host
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSLocalNetworkUsageDescription: Clamshell Host lets your paired iPhone find this Mac on your network.
+        NSBonjourServices:
+          - _clamshell._tcp
+  Clamshell:
+    type: application
+    platform: iOS
+    sources:
+      - Shared
+      - iOS
+    scheme:
+      testTargets:
+        - ClamshellUITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.clamshell
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: iOS/Info.plist
+      properties:
+        CFBundleDisplayName: Clamshell
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: true
+        ITSAppUsesNonExemptEncryption: false
+        NSLocalNetworkUsageDescription: Clamshell connects to your own Mac on your network to show its screen and send your typing.
+        NSCameraUsageDescription: Clamshell uses the camera once to scan the pairing code shown on your Mac.
+        NSBonjourServices:
+          - _clamshell._tcp
+        CFBundleURLTypes:
+          - CFBundleURLName: com.jadenkwek.clamshell
+            CFBundleURLSchemes:
+              - clamshell
+  ClamshellUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - UITests
+    dependencies:
+      - target: Clamshell
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.clamshell.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Clamshell
