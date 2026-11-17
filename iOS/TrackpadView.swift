@@ -36,6 +36,9 @@ final class TrackpadView: UIView {
 
     // Press to click.
     private var sensor = PressSensor()
+    /// The floor presses are measured from, kept in the settings between launches.
+    private var resting = RestingSize(smallShare: UserDefaults.standard.double(forKey: "restingSmallShare"),
+                                      small: UserDefaults.standard.bool(forKey: "restingSmall"))
     private var pressTouch: UITouch?
     private var pressLink: CADisplayLink?
     private var lastPressPoint = CGPoint.zero
@@ -216,7 +219,9 @@ final class TrackpadView: UIView {
     // MARK: Press to click
 
     private func startPress(_ touch: UITouch?, now: TimeInterval) {
-        sensor = PressSensor(pressure: clickPressure, forceEnabled: forceClick)
+        radiusTolerance = touch?.majorRadiusTolerance ?? 0
+        let step = RestingSize.step(tolerance: Double(radiusTolerance))
+        sensor = PressSensor(pressure: clickPressure, forceEnabled: forceClick, restFloor: resting.floor(step: step), step: step)
         pressTouch = touch
         pressed = false
         pressedThisTouch = false
@@ -225,7 +230,6 @@ final class TrackpadView: UIView {
         pressSpeed = 0
         lastPressTime = now
         lastPressPoint = touch?.location(in: self) ?? .zero
-        radiusTolerance = touch?.majorRadiusTolerance ?? 0
         maxForce = touch?.maximumPossibleForce ?? 0
         // The size of the contact can change without the finger moving, so also look every frame.
         pressLink?.invalidate()
@@ -369,7 +373,16 @@ final class TrackpadView: UIView {
         } else if !cancelled, maxCount == 2, now - lastMoveTime < 0.06, hypot(scrollVelocity.x, scrollVelocity.y) > 180 {
             startMomentum()
         }
+        learnRestingSize()
         sendReport(now: now)
+    }
+
+    /// One finger on the pad teaches the resting size for the touches after it (coarse hardware only).
+    private func learnRestingSize() {
+        guard maxCount == 1, !sensor.usedRealForce, sensor.step > 0 else { return }
+        resting.learn(mostlySmall: sensor.mostlySmall, seconds: sensor.heldSeconds)
+        UserDefaults.standard.set(resting.smallShare, forKey: "restingSmallShare")
+        UserDefaults.standard.set(resting.small, forKey: "restingSmall")
     }
 
     /// At most one line a second, so a burst of taps does not flood the log.
@@ -377,9 +390,10 @@ final class TrackpadView: UIView {
         guard let report, now - lastReportTime >= 1 else { return }
         lastReportTime = now
         let s = sensor
-        let text = String(format: "pad: fingers %ld, %.2fs, radius base %.1f min %.1f max %.1f tol %.1f, force %.1f of %.1f, peak %.2f, stage %ld, tap %ld, n %ld",
+        let text = String(format: "pad: fingers %ld, %.2fs, radius base %.1f min %.1f max %.1f tol %.1f, force %.1f of %.1f, peak %.2f, stage %ld, tap %ld, n %ld, floor %.1f, small %.2f, set %ld",
                           maxCount, now - startTime, s.baseline, s.minRadius, s.maxRadius, Double(radiusTolerance),
-                          s.peakForce, Double(maxForce), s.peakLevel, s.deepest.rawValue, tapped ? 1 : 0, Int(touchClicks))
+                          s.peakForce, Double(maxForce), s.peakLevel, s.deepest.rawValue, tapped ? 1 : 0, Int(touchClicks),
+                          s.restFloor, resting.smallShare, pressToClick ? clickPressure : -1)
         report(text)
     }
 
