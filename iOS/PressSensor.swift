@@ -44,6 +44,14 @@ struct PressSensor {
     private var startTime: TimeInterval?
     private var lastTime: TimeInterval = 0
     private var lowSince: TimeInterval?
+    /// Since when the finger has been both still and at its resting size, without a break.
+    private var calmSince: TimeInterval?
+    /// While the contact is above the click size: whether it stepped up from a calm finger. Judged once per rise.
+    private var riseCalm: Bool?
+    /// This touch for the report: "milliseconds:steps:speed" for each size change, and "milliseconds:C:speed"
+    /// for a click or "milliseconds:R:speed" for a rise that was not taken as a press.
+    private(set) var trace: [String] = []
+    private var tracedRadius: Double = -1
 
     /// The finger is still landing for this long; its size then is its resting size.
     static let landing: TimeInterval = 0.07
@@ -51,6 +59,22 @@ struct PressSensor {
     static let minAge: TimeInterval = 0.09
     /// A press cannot start while the finger is gliding this fast.
     static let maxStartSpeed: Double = 250
+    /// Medium, on coarse hardware: the finger counts as still below this speed, and it must have been still
+    /// and at its resting size for `calmBefore` right up to the moment its contact stepped up. A fingertip
+    /// also reads a step bigger when it flattens during a glide, and that is not a press.
+    static let stillSpeed: Double = 90
+    static let calmBefore: TimeInterval = 0.06
+    /// Pressing rolls the fingertip a little, so the sample that steps up may be this fast, no faster.
+    static let maxRollSpeed: Double = 150
+    /// Samples further apart than this are a break (a second finger was down): calm starts over.
+    static let maxGap: TimeInterval = 0.05
+    /// Where a click and a Force Click start by contact size, for light, medium and firm.
+    static let sizeClick: [Double] = [1.18, 1.30, 1.60]
+    static let sizeForce: [Double] = [1.55, 1.70, 2.10]
+    /// The report keeps this many size changes, three refused rises past that, and this many entries in
+    /// all, so a long touch still shows its clicks.
+    static let traceLimit = 16
+    static let traceMarks = 22
     /// How slowly the resting size follows the finger, in seconds.
     static let follow: TimeInterval = 1.5
     /// A press lets go only after the finger has eased off for this long, so a wavering
@@ -75,8 +99,11 @@ struct PressSensor {
         }
         // iPhones report contact size in coarse steps: one step above resting reads 1.5, two read 2
         // (see `level`), so a Force Click must sit clearly above the first step.
-        return ([1.18, 1.30, 1.60][p], [1.55, 1.70, 2.10][p])
+        return (Self.sizeClick[p], Self.sizeForce[p])
     }
+
+    /// Medium on coarse hardware, where one step is all that separates resting from pressing.
+    var needsCalmRise: Bool { pressure == 1 && step > 0 && !usedRealForce }
 
     /// Below this a click lets go.
     var clickRelease: Double { 1 + (thresholds.click - 1) * 0.4 }
@@ -112,11 +139,13 @@ struct PressSensor {
         }
         let age = s.time - (startTime ?? s.time)
         let dt = max(s.time - lastTime, 0)
+        let previousTime = lastTime
         lastTime = s.time
         minRadius = min(minRadius, s.radius)
         maxRadius = max(maxRadius, s.radius)
         peakForce = max(peakForce, s.force)
         if s.maxForce > 0, s.force > 0 { usedRealForce = true }
+        if dt > Self.maxGap { calmSince = nil }
 
         // Learn the resting size: the biggest size while landing, then slowly follow
         // the finger while it rests. Never while pressed.
@@ -135,11 +164,48 @@ struct PressSensor {
         let level = level(radius: s.radius, force: s.force)
         peakLevel = max(peakLevel, level)
         let t = thresholds
+        let shownSpeed = s.speed.isFinite ? Int(min(max(s.speed, 0), 9999)) : -1
+        let stamp = Int(age * 1000)
+        if step > 0, s.radius != tracedRadius, trace.count < Self.traceLimit {
+            tracedRadius = s.radius
+            trace.append("\(stamp):\(Int((s.radius / step).rounded())):\(shownSpeed)")
+        }
         switch stage {
         case .rest:
-            if age > Self.minAge, s.speed < Self.maxStartSpeed, level >= t.click { stage = .click }
+            if level >= t.click {
+                if riseCalm == nil {
+                    // Calm is judged up to the sample before the contact stepped up, and that sample may roll.
+                    let calm = calmSince.map { previousTime - $0 >= Self.calmBefore - 0.005 } ?? false
+                    let taken = calm && s.speed < Self.maxRollSpeed
+                    riseCalm = taken
+                    if needsCalmRise, !taken, level < Self.sizeClick[2], trace.count < Self.traceLimit + 3 {
+                        trace.append("\(stamp):R:\(shownSpeed)")
+                    }
+                }
+                calmSince = nil
+                // Two steps is a press at every setting, however the finger got there.
+                if age > Self.minAge, s.speed < Self.maxStartSpeed,
+                   riseCalm == true || !needsCalmRise || level >= Self.sizeClick[2] {
+                    stage = .click
+                    riseCalm = nil
+                    if step > 0, trace.count < Self.traceMarks { trace.append("\(stamp):C:\(shownSpeed)") }
+                }
+            } else {
+                riseCalm = nil
+                if s.speed < Self.stillSpeed {
+                    if calmSince == nil { calmSince = s.time }
+                } else {
+                    calmSince = nil
+                }
+            }
         case .click, .force:
             if level < clickRelease {
+                // Easing off counts toward calm, so a second press can follow the first closely.
+                if s.speed < Self.stillSpeed {
+                    if calmSince == nil { calmSince = s.time }
+                } else {
+                    calmSince = nil
+                }
                 let since = lowSince ?? s.time
                 lowSince = since
                 if s.time - since >= Self.releaseDelay {
@@ -147,6 +213,7 @@ struct PressSensor {
                     lowSince = nil
                 }
             } else {
+                calmSince = nil
                 lowSince = nil
                 if stage == .click {
                     if forceEnabled, level >= t.force { stage = .force }

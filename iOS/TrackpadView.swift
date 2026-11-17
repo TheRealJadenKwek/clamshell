@@ -43,6 +43,7 @@ final class TrackpadView: UIView {
     private var pressLink: CADisplayLink?
     private var lastPressPoint = CGPoint.zero
     private var lastPressTime: TimeInterval = 0
+    private var lastPressStamp: TimeInterval = 0
     private var pressSpeed: Double = 0
     private var pressed = false         // the button is down from a press
     private var pressedThisTouch = false
@@ -229,6 +230,7 @@ final class TrackpadView: UIView {
         dragArmed = false
         pressSpeed = 0
         lastPressTime = now
+        lastPressStamp = touch?.timestamp ?? now
         lastPressPoint = touch?.location(in: self) ?? .zero
         maxForce = touch?.maximumPossibleForce ?? 0
         // The size of the contact can change without the finger moving, so also look every frame.
@@ -252,11 +254,18 @@ final class TrackpadView: UIView {
     private func samplePress(now: TimeInterval) {
         guard active.count == 1, let touch = pressTouch, active.contains(touch) else { return }
         let p = touch.location(in: self)
-        let dt = now - lastPressTime
-        if dt > 0.001 {
-            let speed = Double(hypot(p.x - lastPressPoint.x, p.y - lastPressPoint.y)) / dt
+        // Speed runs on the finger's own clock. This is also called every display frame, and measured
+        // against that clock a frame landing just after the finger moved would read as a burst of speed.
+        let moved = touch.timestamp - lastPressStamp
+        if moved > 0.001 {
+            let speed = Double(hypot(p.x - lastPressPoint.x, p.y - lastPressPoint.y)) / moved
             pressSpeed = pressSpeed * 0.5 + speed * 0.5
             lastPressPoint = p
+            lastPressStamp = touch.timestamp
+            lastPressTime = now
+        } else if now - lastPressTime > 0.02 {
+            // Nothing new from the finger for more than a frame: it is not moving.
+            pressSpeed *= 0.5
             lastPressTime = now
         }
         maxForce = max(maxForce, touch.maximumPossibleForce)
@@ -390,10 +399,10 @@ final class TrackpadView: UIView {
         guard let report, now - lastReportTime >= 1 else { return }
         lastReportTime = now
         let s = sensor
-        let text = String(format: "pad: fingers %ld, %.2fs, radius base %.1f min %.1f max %.1f tol %.1f, force %.1f of %.1f, peak %.2f, stage %ld, tap %ld, n %ld, floor %.1f, small %.2f, set %ld",
+        let text = String(format: "pad: fingers %ld, %.2fs, radius base %.1f min %.1f max %.1f tol %.1f, force %.1f of %.1f, peak %.2f, stage %ld, tap %ld, n %ld, floor %.1f, small %.2f, set %ld, tr %@",
                           maxCount, now - startTime, s.baseline, s.minRadius, s.maxRadius, Double(radiusTolerance),
                           s.peakForce, Double(maxForce), s.peakLevel, s.deepest.rawValue, tapped ? 1 : 0, Int(touchClicks),
-                          s.restFloor, resting.smallShare, pressToClick ? clickPressure : -1)
+                          s.restFloor, resting.smallShare, pressToClick ? clickPressure : -1, s.trace.joined(separator: " "))
         report(text)
     }
 

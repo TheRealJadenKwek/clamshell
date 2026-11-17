@@ -15,12 +15,19 @@ enum PressSensorCheck {
         var sensor: PressSensor
     }
 
-    /// Plays (seconds, radius) spans at 60 samples a second.
+    /// Plays (seconds, radius) spans at 60 samples a second, all at one finger speed.
     static func play(_ spans: [(Double, Double)], pressure: Int = 1, floor: Double, speed: Double = 0) -> Result {
+        move(spans.map { ($0.0, $0.1, speed) }, pressure: pressure, floor: floor)
+    }
+
+    /// Plays (seconds, radius, finger speed) spans at 60 samples a second. A negative radius is a stretch
+    /// with no samples, as when a second finger is down.
+    static func move(_ spans: [(Double, Double, Double)], pressure: Int = 1, floor: Double) -> Result {
         var sensor = PressSensor(pressure: pressure, forceEnabled: true, restFloor: floor, step: floor > 0 ? step : 0)
         var time = 100.0
         var clicks = 0
-        for (seconds, radius) in spans {
+        for (seconds, radius, speed) in spans {
+            if radius < 0 { time += seconds; continue }
             var left = seconds
             while left > 0 {
                 let old = sensor.stage
@@ -81,6 +88,58 @@ enum PressSensorCheck {
         expect("a press while gliding fast does not start", play([(0.4, 24.2), (0.3, 36.3)], floor: two, speed: 400), deepest: .rest, clicks: 0)
         expect("a big resting finger presses from its own size", play([(0.4, 36.3), (0.3, 48.4), (0.3, 36.3)], floor: two), deepest: .click, clicks: 1)
         expect("a big landing that relaxed for 2.5 s: one step up clicks", play([(0.4, 36.3), (2.5, 24.2), (0.3, 36.3), (0.3, 24.2)], floor: two), deepest: .click, clicks: 1)
+
+        // Medium on coarse hardware: one step bigger is a press only if it stepped up while the finger was still.
+        // A fingertip flattens to the same size during a glide, and that must not click.
+        expect("flattens during a fast glide, then slows to a stop (medium)",
+               move([(0.2, 24.2, 0), (0.4, 36.3, 600), (0.2, 36.3, 150), (0.8, 36.3, 0)], floor: two), deepest: .rest, clicks: 0)
+        expect("flattens during a slow glide (medium)",
+               move([(0.2, 24.2, 0), (0.3, 24.2, 150), (0.6, 36.3, 150), (0.3, 24.2, 150)], floor: two), deepest: .rest, clicks: 0)
+        expect("stops, and flattens in the same moment (medium)",
+               move([(0.3, 24.2, 300), (0.05, 24.2, 0), (0.5, 36.3, 0)], floor: two), deepest: .rest, clicks: 0)
+        expect("stops, then presses (medium)",
+               move([(0.3, 24.2, 300), (0.2, 24.2, 0), (0.3, 36.3, 0), (0.3, 24.2, 0)], floor: two), deepest: .click, clicks: 1)
+        expect("presses with the roll a pressing fingertip makes (medium)",
+               move([(0.3, 24.2, 10), (0.02, 36.3, 120), (0.25, 36.3, 40), (0.3, 24.2, 20)], floor: two), deepest: .click, clicks: 1)
+        expect("still, then sets off fast and flattens on the way, then stops (medium)",
+               move([(0.3, 24.2, 0), (0.4, 36.3, 300), (0.5, 36.3, 0), (0.2, 24.2, 0)], floor: two), deepest: .rest, clicks: 0)
+        expect("presses, then drags fast with the button down (medium)",
+               move([(0.3, 24.2, 0), (0.1, 36.3, 0), (0.8, 36.3, 700), (0.3, 24.2, 0)], floor: two), deepest: .click, clicks: 1)
+        expect("after a glide that flattened: relax, stop, press (medium)",
+               move([(0.2, 24.2, 0), (0.5, 36.3, 600), (0.3, 24.2, 0), (0.3, 36.3, 0), (0.3, 24.2, 0)], floor: two), deepest: .click, clicks: 1)
+        expect("presses a tenth of a second after landing (medium)",
+               move([(0.1, 24.2, 0), (0.3, 36.3, 0), (0.2, 24.2, 0)], floor: two), deepest: .click, clicks: 1)
+        expect("presses twice with a tenth of a second between (medium)",
+               move([(0.3, 24.2, 0), (0.12, 36.3, 0), (0.1, 24.2, 0), (0.15, 36.3, 0), (0.2, 24.2, 0)], floor: two), deepest: .click, clicks: 2)
+        expect("presses twice with a tenth of a second between (light)",
+               move([(0.3, 24.2, 0), (0.12, 36.3, 0), (0.1, 24.2, 0), (0.15, 36.3, 0), (0.2, 24.2, 0)], pressure: 0, floor: two), deepest: .click, clicks: 2)
+        expect("two steps during a slow glide is a press (medium)",
+               move([(0.2, 24.2, 0), (0.3, 24.2, 150), (0.3, 48.4, 150), (0.3, 24.2, 150)], floor: two), deepest: .force, clicks: 1)
+        expect("rests, a second finger comes and goes, and it is bigger when sampling resumes (medium)",
+               move([(0.2, 24.2, 0), (1.0, -1, 0), (0.4, 36.3, 100), (0.3, 36.3, 0), (0.2, 24.2, 0)], floor: two), deepest: .rest, clicks: 0)
+        expect("after a second finger: relax, stop, press (medium)",
+               move([(0.2, 24.2, 0), (1.0, -1, 0), (0.2, 36.3, 100), (0.2, 24.2, 0), (0.2, 36.3, 0), (0.2, 24.2, 0)], floor: two), deepest: .click, clicks: 1)
+        // Light keeps the eager rule, and Firm its two steps, glide or not.
+        expect("flattens during a slow glide (light) still clicks",
+               move([(0.2, 24.2, 0), (0.3, 24.2, 150), (0.3, 36.3, 150), (0.3, 24.2, 150)], pressure: 0, floor: two), deepest: .click, clicks: 1)
+        expect("flattens during a slow glide (firm)",
+               move([(0.2, 24.2, 0), (0.3, 24.2, 150), (0.3, 36.3, 150), (0.3, 24.2, 150)], pressure: 2, floor: two), deepest: .rest, clicks: 0)
+        expect("two steps during a slow glide (firm) clicks",
+               move([(0.2, 24.2, 0), (0.3, 24.2, 150), (0.3, 48.4, 150), (0.3, 24.2, 150)], pressure: 2, floor: two), deepest: .click, clicks: 1)
+        let traced = move([(0.3, 24.2, 0), (0.2, 36.3, 0), (0.2, 24.2, 0)], floor: two).sensor.trace
+        check(traced.count == 4 && traced[0] == "0:2:0" && traced[2].hasSuffix(":C:0") && traced[3].hasSuffix(":2:0"),
+              "the trace lists size changes and the click: \(traced.joined(separator: " "))")
+        let refused = move([(0.2, 24.2, 0), (0.3, 24.2, 200), (0.3, 36.3, 200)], floor: two).sensor.trace
+        check(refused.filter { $0.hasSuffix(":R:200") }.count == 1, "a refused rise is marked once: \(refused.joined(separator: " "))")
+        var flicker: [(Double, Double, Double)] = []
+        for _ in 0..<40 { flicker += [(0.1, 24.2, 300), (0.1, 36.3, 300)] }
+        let long = move(flicker + [(0.3, 24.2, 0), (0.2, 36.3, 0)], floor: two).sensor.trace
+        check(long.count <= PressSensor.traceMarks && long.last?.contains(":C:") == true && long.joined(separator: " ").utf8.count < 320,
+              "a long trace is capped and still ends with the click: \(long.count) entries, \(long.joined(separator: " ").utf8.count) bytes")
+        var wild = PressSensor(pressure: 1, restFloor: two, step: step)
+        wild.update(.init(time: 1, radius: 24.2, force: 0, maxForce: 0, speed: .nan))
+        wild.update(.init(time: 1.2, radius: 36.3, force: 0, maxForce: 0, speed: .infinity))
+        check(wild.stage == .rest, "a speed that is not a number does not crash or click")
 
         // The floor never goes above two steps, whatever is learned: big contacts, long firm presses, fast glides.
         var big = RestingSize()
