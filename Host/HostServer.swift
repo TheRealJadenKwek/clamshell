@@ -194,6 +194,22 @@ final class HostServer: ObservableObject {
                 return
             }
             DisplayScale.restore()
+            self.scheduleDisplaySleep(ticket: ticket, left: ProcessInfo.processInfo.systemUptime)
+        }
+    }
+
+    /// A phone that found the monitor off leaves it off. A phone still here, or one that came back and
+    /// left again (a newer ticket), decides for itself. `left` is when the last phone was gone.
+    private func scheduleDisplaySleep(ticket: Int, left: TimeInterval, after delay: Double = Power.sleepAgainDelay, waits: Int = 0) {
+        guard Power.foundAsleep else { return }
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, ticket == self.restoreTicket, self.session == nil else { return }
+            // A phone is part way through connecting: let it land before deciding.
+            if !self.pending.isEmpty, waits < 6 {
+                self.scheduleDisplaySleep(ticket: ticket, left: left, after: 2, waits: waits + 1)
+                return
+            }
+            Power.sleepAgain(idleFor: ProcessInfo.processInfo.systemUptime - left)
         }
     }
 
@@ -457,6 +473,7 @@ final class Session {
     private func greet(_ hello: Hello) {
         DisplayScale.simulate = options.dryRun
         Power.simulate = options.dryRun
+        Power.noteDisplay()
         if let width = hello.macWidth { DisplayScale.apply(width: width) } else { DisplayScale.apply(step: hello.macScale ?? 0) }
         display = DisplayInfo.main()
         injector.display = display

@@ -30,6 +30,46 @@ enum Power {
         var id: IOPMAssertionID = 0
         IOPMAssertionDeclareUserActivity("Clamshell: phone connected" as CFString, kIOPMUserActiveLocal, &id)
     }
+
+    /// A phone connected while the display slept. Server queue only.
+    private(set) static var foundAsleep = false
+    /// How long after the last phone left the display goes back to sleep. Long enough that a quick trip
+    /// to another app on the phone does not cost a display wake on the way back.
+    static let sleepAgainDelay: TimeInterval = 30
+
+    /// Call when a phone connects, before anything wakes the display.
+    static func noteDisplay() {
+        if CGDisplayIsAsleep(CGMainDisplayID()) != 0 { foundAsleep = true }
+    }
+
+    /// Puts the display back to sleep for a phone that found it asleep. `idleFor` is how long ago the last
+    /// phone left: any key, click or scroll since then came from someone at the Mac, and the display stays on.
+    /// Off switch: `defaults write com.jadenkwek.clamshell.host sleepDisplayAfterPhone -bool false`.
+    static func sleepAgain(idleFor: TimeInterval) {
+        guard foundAsleep else { return }
+        foundAsleep = false
+        guard UserDefaults.standard.object(forKey: "sleepDisplayAfterPhone") as? Bool ?? true else { return }
+        // Pointer movement is left out on purpose: a mouse that drifts on its own would count as someone there.
+        let kinds: [CGEventType] = [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]
+        let last = kinds.map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }.min() ?? .infinity
+        if last < idleFor {
+            log("display: left on, the Mac was used after the phone left")
+            return
+        }
+        if simulate {
+            log("display: would sleep again")
+            return
+        }
+        let pmset = Process()
+        pmset.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+        pmset.arguments = ["displaysleepnow"]
+        do {
+            try pmset.run()
+            log("display: asleep again, as the phone found it")
+        } catch {
+            log("display: could not sleep again: \(error.localizedDescription)")
+        }
+    }
 }
 
 enum Permissions {

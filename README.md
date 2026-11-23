@@ -76,7 +76,7 @@ The iPhone connects straight to the Mac over TCP port **47800**. There is no ser
 
 **Other**
 - Video is HEVC at up to 60 frames per second. *Data saver* lowers the resolution and bit rate and turns sound off.
-- The Mac's display stays awake while a phone is connected.
+- The Mac's display stays awake while a phone is connected. If the display was asleep when the phone connected, it goes back to sleep half a minute after the phone leaves, unless someone used the Mac's own keyboard or mouse in the meantime. To keep it on instead: `defaults write com.jadenkwek.clamshell.host sleepDisplayAfterPhone -bool false`.
 - **Reconnect** and **Forget this Mac** are in the menu.
 
 ## Security
@@ -135,7 +135,7 @@ xcodebuild -project Clamshell.xcodeproj -scheme ClamshellHost -configuration Deb
   --dry-run --test-pattern --port 47801 --print-link 2> build/test-host.log &
 ```
 
-- `--dry-run` and `--test-pattern` each start the same full test host, alone or together: it never posts real input, only pretends to change the display size, never captures the screen or sound, and draws a test picture showing the last input.
+- `--dry-run` and `--test-pattern` each start the same full test host, alone or together: it never posts real input, only pretends to change the display size, never wakes the display or keeps it awake, never captures the screen or sound, and draws a test picture showing the last input.
 - `--print-link` prints the pairing link on standard output, on a test host only; a normal host ignores it. The log goes to standard error.
 - A test host shows no menu bar icon and writes no log file. It never reads or writes the real pairing key: it makes a new throwaway key each time it starts.
 
