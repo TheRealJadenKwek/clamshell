@@ -9,9 +9,12 @@ import SystemConfiguration
 
 enum Power {
     private static var assertion: IOPMAssertionID = 0
+    /// Test hosts leave the display alone: a test must never light a monitor or keep it lit.
+    static var simulate = false
 
     /// Keeps the display on while a phone is connected, since a sleeping display has nothing to show.
     static func holdAwake(_ hold: Bool) {
+        if simulate { return }
         if hold, assertion == 0 {
             IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
                                         IOPMAssertionLevel(kIOPMAssertionLevelOn),
@@ -23,6 +26,7 @@ enum Power {
     }
 
     static func wakeDisplay() {
+        if simulate { return }
         var id: IOPMAssertionID = 0
         IOPMAssertionDeclareUserActivity("Clamshell: phone connected" as CFString, kIOPMUserActiveLocal, &id)
     }
@@ -385,7 +389,7 @@ enum DisplayScale {
             return
         }
         original = base
-        if mode.ioDisplayModeID != now.ioDisplayModeID { set(mode) }
+        if mode.ioDisplayModeID != now.ioDisplayModeID { _ = set(mode) }
     }
 
     /// What phones on build 3 ask for.
@@ -396,26 +400,47 @@ enum DisplayScale {
         apply(width: width)
     }
 
+    /// The Mac's own size is only forgotten once it is really back, so a restore that did not take is
+    /// tried again by the next connection or the next restore.
     static func restore() {
         guard let base = original else { return }
-        original = nil
-        set(base)
+        if let now = current, now.ioDisplayModeID == base.ioDisplayModeID {
+            original = nil
+            return
+        }
+        if set(base) { original = nil }
     }
 
-    private static func set(_ mode: CGDisplayMode) {
+    /// Returns whether the display now has this mode.
+    ///
+    /// The display is woken first. A mode change asked for while the display sleeps does not fail fast:
+    /// the window server holds it for 10 seconds and then refuses it (error 1014), and this runs on the
+    /// server's one queue. That was longer than a phone waits for the Mac, so the first connection to an
+    /// idle Mac failed every time. Asked for right after a wake, the change goes through as the display
+    /// comes on (under 2 seconds in the host's logs).
+    private static func set(_ mode: CGDisplayMode) -> Bool {
         if simulate {
             simulated = mode
             log("display: would set \(mode.width)x\(mode.height)")
-            return
+            return true
         }
+        Power.wakeDisplay()
+        let began = ProcessInfo.processInfo.systemUptime
         let id = CGMainDisplayID()
         var config: CGDisplayConfigRef?
-        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        guard CGBeginDisplayConfiguration(&config) == .success else { return false }
         CGConfigureDisplayWithDisplayMode(config, id, mode, nil)
         let result = CGCompleteDisplayConfiguration(config, .forAppOnly)
-        log("display: \(mode.width)x\(mode.height), result \(result.rawValue)")
-        guard result == .success else { return }
+        guard result == .success else {
+            log(String(format: "display: %dx%d, result %d, %.2fs", mode.width, mode.height, result.rawValue,
+                       ProcessInfo.processInfo.systemUptime - began))
+            return false
+        }
         // The window server finishes a moment later, and capture and the pointer need the new size.
         for _ in 0..<60 where Int(CGDisplayBounds(id).width) != mode.width { usleep(25_000) }
+        // The time is logged because this blocks the session: a `stream:` line that spans it shows a late timer.
+        log(String(format: "display: %dx%d, result 0, %.2fs", mode.width, mode.height,
+                   ProcessInfo.processInfo.systemUptime - began))
+        return true
     }
 }

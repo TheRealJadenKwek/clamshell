@@ -123,6 +123,7 @@ final class HostServer: ObservableObject {
         self.options = options
         // Set before any phone can ask for a size, and never cleared: a test host only pretends.
         DisplayScale.simulate = options.dryRun
+        Power.simulate = options.dryRun
         if options.isTestHost {
             // A throwaway key, new on every launch: a test host never touches the real one in either store.
             key = KeyStore.randomKey()
@@ -374,6 +375,8 @@ final class Session {
     private var lastCursor = CGPoint(x: -1, y: -1)
     private var lastStatus: HostStatus?
     private var ticks = 0
+    /// What the stream did since the last report, to tell a busy Mac from a slow link when it lags.
+    private var stats = StreamStats()
     private var ended = false
     private var greeted = false
     private var deviceInfoLog = LogLimiter(perSecond: 5)
@@ -407,6 +410,7 @@ final class Session {
     func end(_ reason: String) {
         guard !ended else { return }
         ended = true
+        if let line = stats.flush(now: ProcessInfo.processInfo.systemUptime) { log(line) }
         timer?.cancel()
         timer = nil
         source?.stop()
@@ -452,6 +456,7 @@ final class Session {
 
     private func greet(_ hello: Hello) {
         DisplayScale.simulate = options.dryRun
+        Power.simulate = options.dryRun
         if let width = hello.macWidth { DisplayScale.apply(width: width) } else { DisplayScale.apply(step: hello.macScale ?? 0) }
         display = DisplayInfo.main()
         injector.display = display
@@ -527,10 +532,11 @@ final class Session {
             guard let self else { return }
             self.queue.async { self.frameArrived(buffer) }
         }
-        screen.onStopped = { [weak self] reason in
+        screen.onStopped = { [weak self, weak screen] reason in
             guard let self else { return }
             self.queue.async {
-                guard !self.ended, self.usingRealCapture else { return }
+                // A capture that was replaced must not take the new one down with it.
+                guard !self.ended, self.usingRealCapture, let screen, self.source === screen else { return }
                 log("capture stopped: \(reason)")
                 self.usingRealCapture = false
                 self.startPattern(note: "Screen capture stopped: \(reason)")
@@ -544,8 +550,8 @@ final class Session {
                 try await screen.start()
             } catch {
                 guard let self else { return }
-                self.queue.async {
-                    guard !self.ended else { return }
+                self.queue.async { [weak screen] in
+                    guard !self.ended, let screen, self.source === screen else { return }
                     log("capture failed: \(error.localizedDescription)")
                     self.usingRealCapture = false
                     self.startPattern(note: "Could not capture the screen: \(error.localizedDescription)")
@@ -580,8 +586,11 @@ final class Session {
     private func frameArrived(_ buffer: CVPixelBuffer) {
         guard !ended else { return }
         lastBuffer = buffer
+        stats.captured += 1
+        stats.maxInFlight = max(stats.maxInFlight, channel.framesInFlight)
         // The link is behind: keep only the newest frame and send it once the queue drains.
         if channel.framesInFlight > 3 {
+            stats.held += 1
             pendingBuffer = buffer
             return
         }
@@ -600,6 +609,8 @@ final class Session {
 
     private func send(_ frame: EncodedFrame) {
         guard !ended else { return }
+        stats.sent += 1
+        stats.bytes += frame.payload.count
         if frame.isKey, let sets = frame.parameterSets, !sets.isEmpty {
             channel.send(.videoConfig, VideoConfigMsg(codec: frame.codec, parameterSets: sets).encoded())
         }
@@ -619,6 +630,7 @@ final class Session {
         }
 
         let now = ProcessInfo.processInfo.systemUptime
+        if let line = stats.tick(now: now) { log(line) }
         if let pending = pendingBuffer, channel.framesInFlight <= 1 {
             pendingBuffer = nil
             encode(pending)
@@ -637,5 +649,47 @@ final class Session {
                 startRealCapture()
             }
         }
+    }
+}
+
+/// Counts what the stream did, and reports it every 10 seconds while the screen is changing.
+///
+/// Read it like this when a session lags: few frames captured with a late timer or a high load is the Mac
+/// being busy; frames held back with many in flight is the link being slower than the screen; neither is
+/// the phone.
+struct StreamStats {
+    var captured = 0
+    var sent = 0
+    var held = 0
+    var bytes = 0
+    var maxInFlight = 0
+    private var maxLate: TimeInterval = 0
+    private var lastTick: TimeInterval = 0
+    private var since: TimeInterval = 0
+
+    static let period: TimeInterval = 10
+    /// The session's timer runs 60 times a second.
+    static let tickInterval: TimeInterval = 1.0 / 60.0
+
+    /// Call on every timer tick. Returns a line to log when a period with frames in it has ended.
+    mutating func tick(now: TimeInterval) -> String? {
+        if lastTick > 0 { maxLate = max(maxLate, now - lastTick - Self.tickInterval) }
+        lastTick = now
+        if since == 0 { since = now }
+        guard now - since >= Self.period else { return nil }
+        return flush(now: now)
+    }
+
+    /// The line for the period so far, and a fresh start. Also called when the session ends, so the last
+    /// seconds before a hang-up are not lost: that is when a lag is at its worst.
+    mutating func flush(now: TimeInterval) -> String? {
+        let span = now - since
+        defer { self = StreamStats(); lastTick = now; since = now }
+        guard captured > 0, since > 0, span >= 1 else { return nil }
+        var load = [Double](repeating: 0, count: 1)
+        let haveLoad = getloadavg(&load, 1) == 1
+        return String(format: "stream: %.0fs, captured %d, sent %d, held %d, in flight max %d, %.1f Mbps, timer late max %.0f ms, load %@",
+                      span, captured, sent, held, maxInFlight, Double(bytes) * 8 / span / 1_000_000,
+                      max(maxLate, 0) * 1000, haveLoad ? String(format: "%.0f", load[0]) : "?")
     }
 }

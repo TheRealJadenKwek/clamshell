@@ -53,6 +53,9 @@ final class ScreenSource: NSObject, FrameSource, SCStreamOutput, SCStreamDelegat
     private let height: Int
     private let fps: Int
     private var stream: SCStream?
+    /// Guards `stream` and `stopped`: `start` runs on its own task while `stop` comes from the session.
+    private let lock = NSLock()
+    private var stopped = false
     private var firstFrameClock: Date?
     private let queue = DispatchQueue(label: "clamshell.capture", qos: .userInteractive)
 
@@ -70,6 +73,8 @@ final class ScreenSource: NSObject, FrameSource, SCStreamOutput, SCStreamDelegat
         // Only the display is used. Asking for off-screen windows too is slow on a busy Mac.
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         log(String(format: "capture: displays listed in %.2fs", Date().timeIntervalSince(began)))
+        // Stopped already (its session ended, or the display changed size): do not start at all.
+        if lock.withLock({ stopped }) { return }
         guard let scDisplay = content.displays.first(where: { $0.displayID == display.id }) ?? content.displays.first else {
             throw NSError(domain: "ScreenSource", code: 1, userInfo: [NSLocalizedDescriptionKey: "No display to share"])
         }
@@ -92,13 +97,27 @@ final class ScreenSource: NSObject, FrameSource, SCStreamOutput, SCStreamDelegat
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         if captureAudio { try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue) }
         try await stream.startCapture()
-        self.stream = stream
+        // A session that ended while this was starting has already called `stop`, which found no stream
+        // to stop. Without this the capture would keep running beside the next session's.
+        let late: Bool = lock.withLock {
+            if stopped { return true }
+            self.stream = stream
+            return false
+        }
+        if late {
+            try? await stream.stopCapture()
+            log("capture: stopped as soon as it started, it was no longer wanted")
+            return
+        }
         log(String(format: "capture: started in %.2fs", Date().timeIntervalSince(began)))
     }
 
     func stop() {
-        let stream = self.stream
-        self.stream = nil
+        let stream: SCStream? = lock.withLock {
+            stopped = true
+            defer { self.stream = nil }
+            return self.stream
+        }
         Task { try? await stream?.stopCapture() }
     }
 
@@ -141,7 +160,7 @@ final class ScreenSource: NSObject, FrameSource, SCStreamOutput, SCStreamDelegat
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        self.stream = nil
+        lock.withLock { self.stream = nil }
         onStopped?(error.localizedDescription)
     }
 }
